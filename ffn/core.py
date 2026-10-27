@@ -3443,28 +3443,56 @@ def resample_returns(returns, func, seed=0, num_trials=100):
         raise (TypeError("returns needs to be a Series or DataFrame!"))
 
     n = returns.shape[0]
+    rng = None
+    rows = np.empty(stats.shape, dtype=object) if type(stats) is pd.DataFrame and len(stats.columns) else None
+    # Arrays and scalar subclasses retain their per-trial conversion and validation.
+    integer_seed = None
+    if type(seed) in (int, bool, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64) and 0 <= seed < 2**32:
+        integer_seed = int(seed)
+    float64 = np.dtype("float64")
+    plain_index_types = (pd.Index, pd.RangeIndex)
     for i in range(num_trials):
         # Promote before addition to avoid fixed-width rollover or uint64-to-float coercion.
         # Read mutable 0D seeds each trial because callbacks can update their value.
         trial_seed = seed
         # Invalid starting seeds retain their native validation and representation.
         # timedelta64 also subclasses np.integer; only integer dtypes may be promoted.
-        if (isinstance(seed, np.integer) or (type(seed) is np.ndarray and seed.ndim == 0)) and seed.dtype.kind in "iu" and 0 <= seed < 2**32:
+        if integer_seed is not None:
+            trial_seed = integer_seed
+        elif (isinstance(seed, np.integer) or (type(seed) is np.ndarray and seed.ndim == 0)) and seed.dtype.kind in "iu" and 0 <= seed < 2**32:
             trial_seed = int(seed)
         trial_seed = trial_seed + i
         # Match sklearn's legacy draws without its per-trial pandas dispatch.
         # Delegate empty inputs and other seeds to preserve native validation.
         # Callbacks may resize the caller: keep the initial draw count, but use current rows.
         if n and len(returns) and type(trial_seed) is int and 0 <= trial_seed < 2**32:
-            positions = np.random.RandomState(trial_seed).randint(0, len(returns), n)
+            if rng is None:
+                rng = np.random.RandomState(trial_seed)
+                draw = rng.randint
+                reseed = rng.seed
+            else:
+                reseed(trial_seed)
+            positions = draw(0, len(returns), n)
             sample = returns.take(positions)
-            sample_index = returns.index[positions]
+            # take already gathers ordinary labels; other indexes may infer metadata.
+            if type(returns.index) not in plain_index_types:
+                sample.index = returns.index[positions]
         else:
             sample, sample_index = resample(returns, returns.index, n_samples=n, random_state=trial_seed)
-        # Preserve label-sampling metadata; row sampling can infer a frequency.
-        sample.index = sample_index
-        stats.loc[i] = func(sample)
+            sample.index = sample_index
+        result = func(sample)
+        if rows is not None:
+            if type(result) is pd.Series and result.dtype == float64 and result.index.equals(stats.columns):
+                # Copy now: callbacks may reuse their result storage on the next trial.
+                rows[i] = result.to_numpy()
+                continue
+            if i:
+                stats.iloc[:i] = rows[:i]
+            rows = None
+        stats.loc[i] = result
 
+    if rows is not None and len(rows):
+        stats.iloc[:] = rows
     return stats
 
 
