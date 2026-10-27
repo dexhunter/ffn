@@ -2447,10 +2447,11 @@ def calc_ftca(returns, threshold=0.5):
 def _calc_ftca(values, labels, threshold):
     """Cluster finite correlations with unique, non-missing, flat labels.
 
-    Keep pandas' mean-correlation sort for seed ties and the original label
+    Keep pandas' quicksort ordering for seed ties and the original label
     iteration for member order and scalar types. Positions own the shrinking
     working set; high-seed members are assigned before the low-seed cluster.
     """
+    values = np.ascontiguousarray(values)
     names = list(labels)
     remain = np.arange(len(labels))
     clusters = {}
@@ -2459,9 +2460,13 @@ def _calc_ftca(values, labels, threshold):
             clusters[len(clusters) + 1] = [names[remain[0]]]
             break
 
-        means = pd.Series(values[np.ix_(remain, remain)].mean(axis=0), index=labels.take(remain)).sort_values()
-        low_label, high_label = means.index[0], means.index[-1]
-        low, high = labels.get_loc(low_label), labels.get_loc(high_label)
+        # Reduce contiguous rows before selecting columns to preserve summation order.
+        means = values[remain].mean(axis=0)[remain]
+        # Match Series.sort_values' quicksort and index selection for scalar types.
+        order = means.argsort(kind="quicksort")
+        ordered_labels = labels.take(remain)[order]
+        low_label, high_label = ordered_labels[0], ordered_labels[-1]
+        low, high = remain[order[0]], remain[order[-1]]
         remain = remain[(remain != low) & (remain != high)]
 
         if values[low, high] > threshold:
