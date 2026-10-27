@@ -1478,11 +1478,16 @@ def calc_max_drawdown(prices):
     """
     # Expanding maxima promote other dtypes to float64 and treat infinities as missing.
     if np.all(prices.dtypes == np.dtype("float64")) and not np.isinf(prices.to_numpy()).any():
-        # Column-wise reductions avoid panel-sized maxima and ratios; apply requires hashable names.
         if type(prices) is pd.DataFrame and not prices.empty and all(pd.api.types.is_hashable(label) for label in prices.columns):
             # An empty native reduction preserves version-specific metadata and axis ownership.
             result = prices.iloc[:0].min() - 1
-            result.iloc[:] = prices.apply(calc_max_drawdown).to_numpy()
+            drawdowns = np.empty(prices.shape[1], dtype=np.float64)
+            with np.errstate(all="ignore"):
+                for i, column in enumerate(prices.to_numpy().T):
+                    ratios = np.fmax.accumulate(column)
+                    np.divide(column, ratios, out=ratios)
+                    drawdowns[i] = np.fmin.reduce(ratios) - 1
+            result.iloc[:] = drawdowns
             return result
         maximum = prices.cummax()
     else:
